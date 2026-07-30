@@ -15,6 +15,7 @@ For detailed information on detector metrics and evaluation, see :doc:`../detect
 
    detectors/base
    detectors/agent_breaker
+   detectors/agent_breaker_chains
    detectors/always
    detectors/any
    detectors/ansiescape

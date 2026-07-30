@@ -13,6 +13,7 @@ For a guide to writing probes, see :doc:`extending.probe`.
 
    probes/adaptive_attacks
    probes/agent_breaker
+   probes/agent_breaker_chains
    probes/ansiescape
    probes/apikey
    probes/atkgen
