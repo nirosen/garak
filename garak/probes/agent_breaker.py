@@ -146,6 +146,7 @@ class AgentBreaker(garak.probes.IterativeProbe):
     active = False  # Requires red team model configuration
     parallelisable_attempts = False  # Multi-turn probes manage their own dialog
     intent = "M009"  # elicits information disclosure of system or protected data
+    uses_in_loop_detector = True
 
     DEFAULT_PARAMS = garak.probes.IterativeProbe.DEFAULT_PARAMS | {
         "red_team_model_type": "nim",
@@ -176,9 +177,8 @@ class AgentBreaker(garak.probes.IterativeProbe):
         super().__init__(config_root=config_root)
         # Shared detector instance — used for in-loop verification so the
         # same model and logic drive both loop control and final scoring.
-        from garak.detectors.agent_breaker import AgentBreakerResult
-
-        self._detector = AgentBreakerResult(config_root=config_root)
+        if self.uses_in_loop_detector:
+            self._detector = self._make_detector(config_root)
 
         if self.langprovider.target_lang not in ("en", self.lang):
             logging.warning(
@@ -188,6 +188,58 @@ class AgentBreaker(garak.probes.IterativeProbe):
         # Load prompt templates and agent configuration from YAML
         self._load_prompts()
         self._load_agent_config()
+
+    @staticmethod
+    def _make_detector(config_root):
+        """Build the detector used for Single's in-loop verification."""
+        from garak.detectors.agent_breaker import AgentBreakerResult
+
+        return AgentBreakerResult(config_root=config_root)
+
+    @staticmethod
+    def _extract_json(text: str) -> dict:
+        """Extract the first complete JSON object from model output."""
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        else:
+            if isinstance(parsed, dict):
+                return parsed
+            raise json.JSONDecodeError("Top-level JSON must be an object", text, 0)
+
+        brace_start = text.find("{")
+        if brace_start == -1:
+            raise json.JSONDecodeError("No JSON object found", text, 0)
+
+        depth = 0
+        in_string = False
+        escape_next = False
+        for index, character in enumerate(text[brace_start:], start=brace_start):
+            if escape_next:
+                escape_next = False
+                continue
+            if character == "\\":
+                escape_next = True
+                continue
+            if character == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+                if depth == 0:
+                    parsed = json.loads(text[brace_start : index + 1])
+                    if isinstance(parsed, dict):
+                        return parsed
+                    raise json.JSONDecodeError(
+                        "Top-level JSON must be an object", text, brace_start
+                    )
+
+        raise json.JSONDecodeError("Unterminated JSON object", text, brace_start)
 
     def _load_prompts(self):
         """Load prompt templates from the prompts YAML file."""
@@ -295,7 +347,7 @@ class AgentBreaker(garak.probes.IterativeProbe):
             return
 
         try:
-            parsed: dict = self._detector._extract_json(parsed_text)
+            parsed: dict = self._extract_json(parsed_text)
         except json.JSONDecodeError as e:
             logging.warning(
                 f"{self.__class__.__name__} # Failed to parse discovery " f"JSON: {e}"
@@ -459,7 +511,7 @@ class AgentBreaker(garak.probes.IterativeProbe):
 
         if analysis:
             try:
-                parsed = self._detector._extract_json(analysis)
+                parsed = self._extract_json(analysis)
                 result["tool_analyses"] = parsed.get("tool_analyses", {})
                 result["priority_targets"] = parsed.get("priority_targets", [])
             except json.JSONDecodeError as e:
@@ -529,7 +581,7 @@ class AgentBreaker(garak.probes.IterativeProbe):
 
         if response:
             try:
-                parsed = self._detector._extract_json(response)
+                parsed = self._extract_json(response)
                 attack_prompt = parsed.get("attack_prompt")
 
                 # Log the analysis for debugging
