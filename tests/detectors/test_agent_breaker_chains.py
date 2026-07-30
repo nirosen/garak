@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from garak.attempt import Attempt, Message
-from garak.detectors.agent_breaker_chains import AgentBreakerChainResult
+from garak.detectors.agent_breaker import AgentBreakerChainResult, AgentBreakerResult
 from garak.detectors.base import Detector
 from garak.exception import GarakException
 
@@ -30,7 +30,7 @@ def _attempt(
     outputs,
     *,
     prompt="exact attack prompt",
-    probe_classname="agent_breaker_chains.SourceToSink",
+    probe_classname="agent_breaker.SourceToSink",
     notes=None,
 ):
     attempt = Attempt(probe_classname=probe_classname, prompt=Message(text=prompt))
@@ -67,26 +67,72 @@ def test_derives_directly_from_detector():
     ), "chain detector must directly subclass Detector"
 
 
+def test_detector_uses_canonical_agent_breaker_module():
+    assert (
+        AgentBreakerChainResult.__module__ == "garak.detectors.agent_breaker"
+    ), "chain detector must be published from the Agent Breaker detector family"
+
+
+def test_agent_breaker_detector_class_configs_remain_isolated():
+    config = {
+        "detectors": {
+            "agent_breaker": {
+                "AgentBreakerResult": {
+                    "detector_model_name": "single-judge",
+                    "confidence_cutoff": 0.25,
+                },
+                "AgentBreakerChainResult": {
+                    "detector_model_name": "chain-judge",
+                    "detector_model_config": {"max_tokens": 333},
+                },
+            }
+        }
+    }
+    with (
+        patch.object(AgentBreakerResult, "_load_generator"),
+        patch.object(AgentBreakerResult, "_load_verify_prompt"),
+        patch.object(AgentBreakerChainResult, "_load_generator"),
+        patch.object(AgentBreakerChainResult, "_load_verify_prompts"),
+    ):
+        single = AgentBreakerResult(config_root=config)
+        chains = AgentBreakerChainResult(config_root=config)
+
+    assert (
+        single.detector_model_name == "single-judge"
+    ), "Single detector must receive only its class-scoped judge name"
+    assert (
+        single.confidence_cutoff == 0.25
+    ), "Single detector must receive its class-scoped threshold"
+    assert (
+        chains.detector_model_name == "chain-judge"
+    ), "chain detector must receive only its class-scoped judge name"
+    assert (
+        chains.detector_model_config["max_tokens"] == 333
+    ), "chain detector must receive its class-scoped model configuration"
+
+
 def test_initialisation_eagerly_loads_configured_generator():
     judge = MagicMock()
     config = {
         "detectors": {
-            "agent_breaker_chains": {
-                "detector_model_type": "test",
-                "detector_model_name": "Judge",
-                "detector_model_config": {
-                    "max_tokens": 321,
-                    "temperature": 0.25,
-                    "vary_seed_each_call": True,
-                    "vary_temp_each_call": True,
-                    "suppressed_params": ["custom"],
+            "agent_breaker": {
+                "AgentBreakerChainResult": {
+                    "detector_model_type": "test",
+                    "detector_model_name": "Judge",
+                    "detector_model_config": {
+                        "max_tokens": 321,
+                        "temperature": 0.25,
+                        "vary_seed_each_call": True,
+                        "vary_temp_each_call": True,
+                        "suppressed_params": ["custom"],
+                    },
                 },
             }
         }
     }
     with (
         patch(
-            "garak.detectors.agent_breaker_chains._plugins.load_plugin",
+            "garak.detectors.agent_breaker._plugins.load_plugin",
             return_value=judge,
         ) as load_plugin,
         patch.object(AgentBreakerChainResult, "_load_verify_prompts"),
@@ -260,12 +306,12 @@ def test_ignores_backend_metadata_and_cached_in_loop_verdicts(detector):
     "probe_classname, notes",
     [
         ("agent_breaker.AgentBreaker", {}),
-        ("agent_breaker_chains.SourceToSink", {"chain_id": ""}),
-        ("agent_breaker_chains.SourceToSink", {"chain_id": "   "}),
-        ("agent_breaker_chains.SourceToSink", {"chain_role": "pivot"}),
-        ("agent_breaker_chains.SourceToSink", {"chain_step": 2}),
-        ("agent_breaker_chains.SourceToSink", {"chain_step": True}),
-        ("agent_breaker_chains.SourceToSink", {"chain_total_steps": 0}),
+        ("agent_breaker.SourceToSink", {"chain_id": ""}),
+        ("agent_breaker.SourceToSink", {"chain_id": "   "}),
+        ("agent_breaker.SourceToSink", {"chain_role": "pivot"}),
+        ("agent_breaker.SourceToSink", {"chain_step": 2}),
+        ("agent_breaker.SourceToSink", {"chain_step": True}),
+        ("agent_breaker.SourceToSink", {"chain_total_steps": 0}),
     ],
 )
 def test_nonchain_or_nonterminal_attempt_is_unscored(detector, probe_classname, notes):

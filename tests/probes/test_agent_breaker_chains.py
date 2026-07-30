@@ -8,11 +8,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from garak import _config
+from garak import _config, _plugins
 from garak.attempt import Message
 from garak.exception import PluginConfigurationError
-from garak.probes.agent_breaker import AgentBreaker, AttackState
-from garak.probes.agent_breaker_chains import SourceToSink
+from garak.probes.agent_breaker import AgentBreaker, AttackState, SourceToSink
+from garak.resources.agent_breaker.source_to_sink import _SourceToSinkMixin
 
 
 def _intermediate_policy():
@@ -146,6 +146,85 @@ def test_probe_declares_chain_specific_metadata():
     assert (
         SourceToSink.uses_in_loop_detector is False
     ), "chain probe must defer judgement to its detector"
+
+
+def test_probe_uses_canonical_module_and_cooperative_mro():
+    assert (
+        SourceToSink.__module__ == "garak.probes.agent_breaker"
+    ), "chain probe must be published from the Agent Breaker probe family"
+    assert issubclass(
+        SourceToSink, AgentBreaker
+    ), "chain probe must remain an AgentBreaker subtype"
+    assert (
+        _SourceToSinkMixin in SourceToSink.__mro__
+    ), "chain probe must retain its private resource implementation mixin"
+    assert SourceToSink.__mro__.index(_SourceToSinkMixin) < SourceToSink.__mro__.index(
+        AgentBreaker
+    ), "resource mixin must precede AgentBreaker for cooperative super calls"
+    assert (
+        AttackState.__module__ == "garak.probes.agent_breaker"
+    ), "shared attempt state must retain its canonical public module"
+    lifecycle_methods = {
+        "__init__",
+        "_load_prompts",
+        "_create_init_attempts",
+        "_queue_step_attack",
+        "_advance_stepwise",
+        "_handle_stepwise_refinement",
+        "_postprocess_attempt",
+        "_generate_next_attempts",
+    }
+    assert (
+        lifecycle_methods <= SourceToSink.__dict__.keys()
+    ), "chain lifecycle overrides must remain on the public plugin class"
+
+
+def test_probe_discovery_uses_only_canonical_identifier():
+    discovered = {classname for classname, _ in _plugins.enumerate_plugins("probes")}
+    assert (
+        "probes.agent_breaker.SourceToSink" in discovered
+    ), "plugin discovery must expose the canonical chain probe identifier"
+    assert (
+        "probes.agent_breaker_chains.SourceToSink" not in discovered
+    ), "plugin discovery must not retain the removed chain probe module"
+
+
+def test_agent_breaker_class_configs_remain_isolated():
+    config = {
+        "probes": {
+            "agent_breaker": {
+                "AgentBreaker": {
+                    "max_attempts_per_tool": 2,
+                    "success_threshold": 0.2,
+                },
+                "SourceToSink": {
+                    "max_attempts_per_tool": 3,
+                    "success_threshold": 0.3,
+                    "max_chains": 4,
+                },
+            }
+        }
+    }
+    with patch.object(AgentBreaker, "_make_detector", return_value=MagicMock()):
+        single = AgentBreaker(config_root=config)
+        chains = SourceToSink(config_root=config)
+
+    assert (
+        single.max_attempts_per_tool == 2
+    ), "Single must receive only its class-scoped attempt limit"
+    assert (
+        single.success_threshold == 0.2
+    ), "Single must receive only its class-scoped threshold"
+    assert not hasattr(
+        single, "max_chains"
+    ), "chain-only defaults must not leak onto Single"
+    assert (
+        chains.max_attempts_per_tool == 3
+    ), "Chains must receive its own class-scoped attempt limit"
+    assert (
+        chains.success_threshold == 0.3
+    ), "Chains must receive its own class-scoped threshold"
+    assert chains.max_chains == 4, "Chains must receive its class-scoped chain limit"
 
 
 def test_constructor_does_not_load_in_loop_judge():
@@ -1049,6 +1128,9 @@ def test_provider_free_probe_lifecycle_runs_one_handoff_and_one_terminal():
     assert (
         len(fake_generator.requests) == 2
     ), "the target must receive exactly two requests"
+    assert {attempt.probe_classname for attempt in completed} == {
+        "agent_breaker.SourceToSink"
+    }, "provider-free lifecycle attempts must carry the canonical probe classname"
     assert (
         'named exactly "source"' in fake_generator.requests[0]
     ), "the first request must be bound to the intermediate tool"
@@ -1141,8 +1223,8 @@ def test_prompt_data_is_generic_and_contains_exact_frozen_v6():
         Path(__file__).parents[2]
         / "garak"
         / "data"
-        / "agent_breaker_chains"
-        / "prompts.yaml"
+        / "agent_breaker"
+        / "source_to_sink_prompts.yaml"
     )
     prompts = yaml.safe_load(prompt_path.read_text(encoding="utf-8"))
     assert set(prompts) == {
