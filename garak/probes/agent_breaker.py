@@ -201,10 +201,14 @@ class AgentBreaker(garak.probes.IterativeProbe):
     @staticmethod
     def _extract_json(text: str) -> dict:
         """Extract the first complete JSON object from model output."""
+        if not isinstance(text, str):
+            raise json.JSONDecodeError("Model output must be text", "", 0)
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
             pass
+        except (RecursionError, TypeError, ValueError) as error:
+            raise json.JSONDecodeError("Invalid JSON object", text, 0) from error
         else:
             if isinstance(parsed, dict):
                 return parsed
@@ -234,7 +238,12 @@ class AgentBreaker(garak.probes.IterativeProbe):
             elif character == "}":
                 depth -= 1
                 if depth == 0:
-                    parsed = json.loads(text[brace_start : index + 1])
+                    try:
+                        parsed = json.loads(text[brace_start : index + 1])
+                    except (RecursionError, TypeError, ValueError) as error:
+                        raise json.JSONDecodeError(
+                            "Invalid JSON object", text, brace_start
+                        ) from error
                     if isinstance(parsed, dict):
                         return parsed
                     raise json.JSONDecodeError(
@@ -848,8 +857,9 @@ class SourceToSink(_SourceToSinkMixin, AgentBreaker):
 
     Tools are tagged with generic capabilities, joined into a data-flow graph,
     and searched for acyclic paths from a source to a terminal sink. Each
-    intermediate response must yield a named, verbatim artifact before the next
-    step is queued. The probe queues no follow-up after a final sink attempt.
+    intermediate response must yield an explicitly keyed, verbatim artifact
+    before the next step is queued. The probe queues no follow-up after a final
+    sink attempt.
     """
 
     lang = "en"
@@ -907,6 +917,7 @@ class SourceToSink(_SourceToSinkMixin, AgentBreaker):
         self._require_single_generation()
         self._require_no_buffs()
         self._require_english_target_language()
+        self._validate_safety_configuration()
         self._terminal_tool_request_reservations = set()
         self._terminal_tool_counts = {}
         self._cap_agent_tools()
@@ -982,7 +993,9 @@ class SourceToSink(_SourceToSinkMixin, AgentBreaker):
             if not required_inputs:
                 return None
             request_ref = self._request_ref(sent_prompt)
-            if not self._reserve_terminal_tool_attempt(sequence[index], request_ref):
+            if request_ref is None or not self._reserve_terminal_tool_attempt(
+                sequence[index], request_ref
+            ):
                 return None
             active["terminal_request_ref"] = request_ref
 

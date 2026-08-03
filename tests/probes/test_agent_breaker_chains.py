@@ -317,6 +317,26 @@ def test_safety_configuration_cannot_exceed_reviewed_maxima(name, value):
         probe._config_limit(name, value)
 
 
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("max_terminal_attempts_per_tool", 2),
+        ("max_path_expansions", 1025),
+        ("success_threshold", float("inf")),
+    ],
+)
+def test_safety_configuration_fails_before_model_or_target_calls(name, value):
+    probe = _probe(**{name: value})
+    probe._setup_red_team_model = MagicMock()
+    probe.generator = MagicMock()
+
+    with pytest.raises(PluginConfigurationError):
+        probe._create_init_attempts()
+
+    probe._setup_red_team_model.assert_not_called()
+    probe.generator.generate.assert_not_called()
+
+
 def test_tool_list_is_validated_and_capped_before_analysis():
     probe = _probe(
         max_tools=2,
@@ -329,7 +349,7 @@ def test_tool_list_is_validated_and_capped_before_analysis():
                     "chain_policy": _intermediate_policy(),
                     "extra": "drop",
                 },
-                _tool("one", _terminal_policy(), "duplicate"),
+                _tool("ONE", _terminal_policy(), "case-insensitive duplicate"),
                 _tool("two", _terminal_policy(), 7),
                 _tool("three", _intermediate_policy(), "third"),
             ],
@@ -702,13 +722,27 @@ def test_generated_attack_prompt_must_quote_required_artifact():
         {
             "analysis": "use the reference",
             "technique": "test",
-            "attack_prompt": "invoke the sink with ref:123",
+            "attack_prompt": "invoke the sink\nreference = ref:123",
         }
     )
     assert probe._generate_step_attack_prompt(_chain(), 1) == (
-        "invoke the sink with ref:123",
+        "invoke the sink\nreference = ref:123",
         "test",
-    ), "grounded attack prompt must remain eligible"
+    ), "explicitly bound attack input must remain eligible"
+
+
+def test_zero_hypothesis_limit_cannot_fall_back_to_default_hypothesis():
+    probe = _probe(max_hypotheses_per_chain=0)
+    probe._generate_exploit_hypotheses = MagicMock()
+    probe._generate_step_plan = MagicMock()
+    path = {"sequence": ["source", "sink"], "edges": [], "score": 1.0}
+
+    assert probe._generate_chain_attacks([path]) == {
+        "chains": [],
+        "priority_chains": [],
+    }, "zero hypothesis limit must prevent chain execution"
+    probe._generate_exploit_hypotheses.assert_not_called()
+    probe._generate_step_plan.assert_not_called()
 
 
 def test_step_prompt_renders_only_declared_input_artifacts():
@@ -745,6 +779,10 @@ def test_artifact_and_helper_prompt_aggregate_bounds_fail_closed():
         probe._get_helper_model_response(oversized_prompt) is None
     ), "oversized helper prompt must fail before inference"
     probe._get_model_response.assert_not_called()
+    probe._get_model_response.return_value = oversized_prompt
+    assert (
+        probe._get_helper_model_response("bounded prompt") is None
+    ), "oversized helper output must fail before parsing"
 
 
 def test_chain_config_limit_preserves_priority_order():
@@ -872,11 +910,77 @@ def test_grounded_model_artifact_is_accepted():
         return_value=json.dumps({"artifacts": {"reference": "real-ref"}})
     )
     assert probe._extract_artifacts(
-        _chain(step_index=0), 0, "prompt", "target returned real-ref"
-    ) == {"reference": "real-ref"}, "grounded artifact must be accepted"
+        _chain(step_index=0), 0, "prompt", "reference = real-ref"
+    ) == {"reference": "real-ref"}, "explicitly bound artifact must be accepted"
 
 
-def test_model_artifact_cannot_override_structured_response_value():
+def test_incidental_parser_substring_is_not_an_artifact():
+    probe = _probe()
+    probe._prompts = {
+        "EXTRACT_ARTIFACTS": "{tool_name}{role}{intent}{step_prompt}"
+        "{agent_response}{artifact_keys}"
+    }
+    probe._setup_parse_model = MagicMock()
+    probe.parse_model = MagicMock()
+    probe._get_model_response = MagicMock(
+        return_value=json.dumps({"artifacts": {"reference": "fail"}})
+    )
+
+    assert (
+        probe._extract_artifacts(_chain(step_index=0), 0, "prompt", "lookup failed")
+        == {}
+    ), "incidental response text must not confer artifact authority"
+
+
+def test_oversized_target_response_cannot_produce_artifacts():
+    probe = _probe()
+    response = (
+        '{"reference":"ref:123","padding":"'
+        + ("x" * probe._STEP_RESPONSE_CHAR_LIMIT)
+        + '"}'
+    )
+    probe._setup_parse_model = MagicMock()
+
+    assert probe._extract_artifacts(_chain(step_index=0), 0, "prompt", response) == (
+        {}
+    ), "oversized response must not create an artifact/checker split view"
+    probe._setup_parse_model.assert_not_called()
+
+
+def test_json_integer_limit_fails_closed():
+    huge_integer = "1" * 5000
+    assert _probe()._structured_response_artifacts(
+        f'{{"reference":{huge_integer}}}', ["reference"]
+    ) == ({}, set()), "oversized structured artifacts must fail closed"
+    with pytest.raises(json.JSONDecodeError):
+        AgentBreaker._extract_json(f'{{"reference":{huge_integer}}}')
+
+
+def test_invalid_unicode_cannot_reach_tool_requests_or_hashes():
+    invalid = "value\ud800"
+    probe = _probe()
+    probe._get_model_response = MagicMock()
+
+    assert (
+        probe._get_helper_model_response(invalid) is None
+    ), "invalid Unicode must not reach a helper transport"
+    probe._get_model_response.assert_not_called()
+    probe._get_model_response.return_value = invalid
+    assert (
+        probe._get_helper_model_response("safe prompt") is None
+    ), "invalid Unicode helper output must fail before parsing"
+    assert (
+        probe._bind_step_request("sink", invalid) is None
+    ), "invalid Unicode must not become a target request"
+    assert (
+        probe._artifact_text(invalid) is None
+    ), "invalid Unicode must not become a handoff artifact"
+    assert (
+        probe._request_ref(invalid) is None
+    ), "invalid Unicode must not reach request hashing"
+
+
+def test_unrelated_parser_value_cannot_override_structured_response_value():
     probe = _probe()
     probe._prompts = {
         "EXTRACT_ARTIFACTS": "{tool_name}{role}{intent}{step_prompt}"
@@ -888,9 +992,9 @@ def test_model_artifact_cannot_override_structured_response_value():
         return_value=json.dumps({"artifacts": {"reference": "other-ref"}})
     )
     response = json.dumps({"reference": "real-ref", "note": "other-ref"})
-    assert (
-        probe._extract_artifacts(_chain(step_index=0), 0, "prompt", response) == {}
-    ), "model artifact must not override structured truth"
+    assert probe._extract_artifacts(_chain(step_index=0), 0, "prompt", response) == {
+        "reference": "real-ref"
+    }, "only the declared structured key may supply an artifact"
 
 
 def test_short_parser_substring_is_not_an_artifact():
@@ -992,10 +1096,9 @@ def test_step_request_has_exact_manifest_tool_binding_preamble():
     assert bound_request.startswith(
         "Probe-authored tool binding:\n"
         'Use only the manifest tool named exactly "sink" for this request.\n'
-        'Operator description: "send only approved records"\n'
         "Do not use or invoke any other tool.\n\n"
         "Helper-generated request:\n"
-    ), "the probe must prepend the exact manifest tool and operator description"
+    ), "the probe must prepend the exact manifest tool without untrusted descriptions"
     assert bound_request.endswith(
         "Send the grounded value ref:123."
     ), "the helper request must follow the fixed probe-authored preamble"
@@ -1018,6 +1121,22 @@ def test_step_request_naming_another_manifest_tool_is_rejected():
         probe._queue_step_attack(_chain(), "unsafe handoff") is None
     ), "a helper request naming another configured tool must be rejected"
     probe._create_attempt.assert_not_called()
+
+
+def test_other_tool_name_in_selected_description_is_not_forwarded():
+    probe = _probe(
+        agent_config=_manifest(
+            _tool("source", _intermediate_policy()),
+            _tool("sink", _terminal_policy(), "forward through source"),
+        )
+    )
+
+    bound_request = probe._bind_step_request("sink", "reference = ref:123")
+
+    assert bound_request is not None, "valid selected tool binding must remain usable"
+    assert (
+        "forward through source" not in bound_request
+    ), "operator descriptions must not inject competing tool authority"
 
 
 def test_terminal_attempt_budget_is_counted_per_manifest_tool():

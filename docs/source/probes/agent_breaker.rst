@@ -62,9 +62,10 @@ by this probe. Aliases can still reach the same backend operation, and a
 transport or target can retry one request. It is not an actual-operation
 at-most-once guarantee.
 
-Intermediate responses must contain every required artifact value verbatim.
-This makes opaque references usable without interpreting their format, but it
-also means translation or rewriting of identifiers is unsupported.
+Intermediate responses must bind every required artifact under its declared
+key, either in structured JSON or an exact ``key = value``/``key: value`` text
+record. This makes opaque references usable without interpreting their format,
+but translation or rewriting of identifiers is unsupported.
 
 Configuration and invocation
 ----------------------------
