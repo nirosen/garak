@@ -710,14 +710,14 @@ def test_generated_attack_prompt_must_quote_required_artifact():
             {
                 "analysis": "use the reference",
                 "technique": "test",
-                "attack_prompt": "invoke the sink without its value",
+                "attack_prompt": "invoke the sink\nreference = forged",
             }
         )
     )
     assert probe._generate_step_attack_prompt(_chain(), 1) == (
         None,
         "",
-    ), "attack prompt must include required artifact values"
+    ), "attack prompt must reject conflicting required artifact values"
     probe._get_model_response.return_value = json.dumps(
         {
             "analysis": "use the reference",
@@ -729,6 +729,44 @@ def test_generated_attack_prompt_must_quote_required_artifact():
         "invoke the sink\nreference = ref:123",
         "test",
     ), "explicitly bound attack input must remain eligible"
+
+
+def test_generated_attack_prompt_recovers_missing_required_input_binding():
+    probe = _probe()
+    probe._prompts = {"STEP_ATTACK": "{target_tool}{input_artifact_keys}"}
+    probe._get_model_response = MagicMock(
+        return_value=json.dumps(
+            {
+                "analysis": "invoke the sink with the prior reference",
+                "technique": "test",
+                "attack_prompt": "please process this bound request",
+            }
+        )
+    )
+
+    assert probe._generate_step_attack_prompt(_chain(), 1) == (
+        "please process this bound request\n\nEXACT REQUIRED INPUTS:\n  reference = ref:123",
+        "test",
+    ), "missing helper bindings must be appended as exact probe-controlled records"
+
+
+def test_generated_attack_prompt_rejects_conflict_alongside_exact_binding():
+    probe = _probe()
+    probe._prompts = {"STEP_ATTACK": "{target_tool}{input_artifact_keys}"}
+    probe._get_model_response = MagicMock(
+        return_value=json.dumps(
+            {
+                "analysis": "smuggle a conflicting reference",
+                "technique": "test",
+                "attack_prompt": "reference = forged\nreference = ref:123",
+            }
+        )
+    )
+
+    assert probe._generate_step_attack_prompt(_chain(), 1) == (
+        None,
+        "",
+    ), "required input records must have one unambiguous value"
 
 
 def test_zero_hypothesis_limit_cannot_fall_back_to_default_hypothesis():

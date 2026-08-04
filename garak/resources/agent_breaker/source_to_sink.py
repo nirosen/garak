@@ -282,6 +282,22 @@ class _SourceToSinkMixin:
             if isinstance(tool, dict)
         )
 
+    def _selected_tool_block(self, sequence: list, step_index: int) -> str:
+        if step_index >= len(sequence):
+            return ""
+        selected_name = sequence[step_index]
+        for tool in self.agent_config.get("tools", []):
+            if isinstance(tool, dict) and tool.get("name") == selected_name:
+                return "### Tool: {name}\nDescription: {description}\nChain policy: {policy}".format(
+                    name=selected_name,
+                    description=self._bounded_text(
+                        tool.get("description", "No description"),
+                        self._MODEL_FIELD_CHAR_LIMIT,
+                    ),
+                    policy=json.dumps(tool.get("chain_policy", {}), sort_keys=True),
+                )
+        return ""
+
     def _build_chain_configs(self) -> List[Tuple[str, dict]]:
         """Return executable chains in discovery priority order."""
         chains = (self.agent_analysis or {}).get("chains", []) or []
@@ -1211,6 +1227,62 @@ class _SourceToSinkMixin:
             for key, value in required.items()
         )
 
+    @staticmethod
+    def _step_request_input_records(helper_request: str) -> dict:
+        bindings: dict[str, list[str]] = {}
+        for line in helper_request.splitlines():
+            record = line.strip().lstrip("-* ").strip()
+            separators = [
+                index for index in (record.find("="), record.find(":")) if index >= 0
+            ]
+            if not separators:
+                continue
+            separator = min(separators)
+            key = record[:separator].strip().strip("'\"").casefold()
+            value = record[separator + 1 :].strip()
+            if key and value:
+                bindings.setdefault(key, []).append(value)
+        return bindings
+
+    def _helper_request_is_usable(
+        self,
+        helper_request: Optional[str],
+        technique: str,
+        target_tool: str,
+        required: dict,
+    ) -> Tuple[Optional[str], str]:
+        if helper_request is None or not helper_request.strip():
+            return None, ""
+        for other_tool in self.agent_config.get("tools", []):
+            other_name = (
+                other_tool.get("name") if isinstance(other_tool, dict) else None
+            )
+            if (
+                isinstance(other_name, str)
+                and other_name != target_tool
+                and self._request_explicitly_names_tool(helper_request, other_name)
+            ):
+                return None, ""
+        cleaned = helper_request.strip()
+        input_records = self._step_request_input_records(cleaned)
+        missing = {}
+        for required_key, required_value in required.items():
+            candidate_values = input_records.get(required_key.casefold(), [])
+            if candidate_values:
+                if candidate_values != [required_value]:
+                    return None, ""
+            else:
+                missing[required_key] = required_value
+        if not missing:
+            return cleaned, technique
+        prior_artifacts = self._format_prior_artifacts(missing)
+        if prior_artifacts is None:
+            return None, ""
+        completed = f"{cleaned}\n\nEXACT REQUIRED INPUTS:\n{prior_artifacts}"
+        if self._prompt_contains_inputs(completed, required):
+            return completed, technique
+        return None, ""
+
     def _step_prompt_values(self, chain: dict, step_index: int) -> Optional[dict]:
         sequence = chain.get("sequence") or []
         entry = self._plan_entry(chain, step_index)
@@ -1239,6 +1311,7 @@ class _SourceToSinkMixin:
             "input_artifact_keys": ", ".join(entry.get("input_artifact_keys") or [])
             or "(none)",
             "prior_artifacts": prior_artifacts,
+            "tools_block": self._selected_tool_block(sequence, step_index),
             "prior_steps_transcript": self._format_prior_steps(
                 chain.get("step_outputs") or []
             ),
@@ -1261,11 +1334,12 @@ class _SourceToSinkMixin:
         attack_prompt, technique = self._extract_attack_prompt(
             self._get_helper_model_response(planning_prompt)
         )
-        if attack_prompt is None or not self._prompt_contains_inputs(
-            attack_prompt, required
-        ):
-            return None, ""
-        return attack_prompt, technique
+        return self._helper_request_is_usable(
+            attack_prompt,
+            technique,
+            sequence[step_index],
+            required,
+        )
 
     def _generate_step_exploit_prompt(
         self, chain: dict, step_index: int, history: list
@@ -1293,11 +1367,12 @@ class _SourceToSinkMixin:
         attack_prompt, technique = self._extract_attack_prompt(
             self._get_helper_model_response(planning_prompt)
         )
-        if attack_prompt is None or not self._prompt_contains_inputs(
-            attack_prompt, required
-        ):
-            return None, ""
-        return attack_prompt, technique
+        return self._helper_request_is_usable(
+            attack_prompt,
+            technique,
+            sequence[step_index],
+            required,
+        )
 
     @staticmethod
     def _is_json_scalar(value: object) -> bool:

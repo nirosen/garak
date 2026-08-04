@@ -978,6 +978,13 @@ class SourceToSink(_SourceToSinkMixin, AgentBreaker):
         attack_prompt, technique = self._generate_step_attack_prompt(chain, index)
         if not attack_prompt:
             return None
+        output_keys = entry.get("artifact_keys") or []
+        if output_keys:
+            required_lines = "\n".join(f"{key} = <value>" for key in output_keys)
+            attack_prompt = (
+                f"{attack_prompt}\n\nReturn the real result by replacing each <value> below:\n{required_lines}\n"
+                "Do not add bullets, styling, labels, or prose around these lines."
+            )
         bound_request = self._bind_step_request(sequence[index], attack_prompt)
         if bound_request is None:
             return None
