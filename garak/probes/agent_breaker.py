@@ -863,6 +863,7 @@ class SourceToSink(_SourceToSinkMixin, AgentBreaker):
     """
 
     lang = "en"
+    # Technique example only; this probe does not implement ChainFuzzer.
     doc_uri = "https://arxiv.org/abs/2603.12614"
     primary_detector = "agent_breaker.AgentBreakerChainResult"
     tags = [
