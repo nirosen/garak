@@ -87,11 +87,11 @@ EXPLOIT_HYPOTHESES: |
   {tools_block}
 
   Produce at most {max_hypotheses} materially different techniques. A
-  capability used by the sink must be returned by an earlier real tool call;
-  attacker-controlled content must not fabricate it. Each technique must fit
-  exactly one pass through the listed path: one invocation per listed tool and
-  no duplicate, replay, retry, idempotency, batching, or multi-order tests.
-  Respond with JSON only:
+  artifact used by the sink must be supplied exactly as returned by an earlier
+  listed tool; do not modify, substitute, cross-mix, or fabricate it. Each
+  technique must fit exactly one pass through the listed path: one invocation
+  per listed tool and no duplicate, replay, retry, idempotency, batching, or
+  multi-object tests. Respond with JSON only:
   {{
     "hypotheses": [
       {{
