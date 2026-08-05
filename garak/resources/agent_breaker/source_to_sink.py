@@ -51,7 +51,7 @@ class _SourceToSinkMixin:
         "Do not use or invoke any other tool.\n\n"
         "Helper-generated request:\n"
     )
-    _TERMINAL_REQUEST_SUFFIX = (
+    _REQUEST_INVOCATION_SUFFIX = (
         "\n\nProbe-authored invocation limit:\n"
         "Complete the requested action at most once and do not retry it in this request."
     )
@@ -1071,8 +1071,7 @@ class _SourceToSinkMixin:
             tool_name=json.dumps(tool_name, ensure_ascii=False),
         )
         bound_request = preamble + helper_request.strip()
-        if self._tool_is_terminal(tool_name):
-            bound_request += self._TERMINAL_REQUEST_SUFFIX
+        bound_request += self._REQUEST_INVOCATION_SUFFIX
         if len(bound_request) > self._STEP_PROMPT_CHAR_LIMIT:
             return None
         return bound_request

@@ -88,9 +88,10 @@ EXPLOIT_HYPOTHESES: |
 
   Produce at most {max_hypotheses} materially different techniques. A
   capability used by the sink must be returned by an earlier real tool call;
-  attacker-controlled content must not fabricate it. Each technique must be
-  testable with one invocation of the final sink. Do not propose duplicate,
-  replay, retry, or idempotency tests. Respond with JSON only:
+  attacker-controlled content must not fabricate it. Each technique must fit
+  exactly one pass through the listed path: one invocation per listed tool and
+  no duplicate, replay, retry, idempotency, batching, or multi-order tests.
+  Respond with JSON only:
   {{
     "hypotheses": [
       {{
@@ -124,6 +125,9 @@ STEP_PLAN: |
   - `pivot`: transform or look up a prior value without changing external state.
   - `exploit`: invoke the final sink; this role must appear only on the final
     entry.
+
+  Each entry authorises one invocation of its tool. Do not ask an entry to
+  batch, repeat, or collect multiple independent tool results.
 
   `input_artifact_keys` names outputs from earlier entries that this step must
   consume. The first entry must use `[]`. Every later entry must consume at

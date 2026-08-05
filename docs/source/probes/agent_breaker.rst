@@ -25,7 +25,7 @@ The probe tags candidate tool relationships, plans a bounded chain, and
 executes its steps sequentially. Configured limits cap the probe's planning,
 chain length, and queued attempts. The probe reserves each terminal request
 against a per-manifest-tool budget before dispatch, requires the final plan to
-produce no downstream artifacts, tells the target not to retry the terminal
+produce no downstream artifacts, tells the target not to repeat any step's
 action, and does not queue a follow-up after receiving the terminal response.
 
 .. warning::
