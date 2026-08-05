@@ -304,6 +304,7 @@ class AgentBreakerChainResult(Detector):
 
     _EXPECTED_FIELDS = {"verdict", "confidence", "effect", "evidence", "reason"}
     _VERDICTS = {"YES", "NO", "UNKNOWN"}
+    _SINK_REQUIREMENT_CHAR_LIMIT = 1000
     _RUNTIME_ERRORS = (
         GarakException,
         OSError,
@@ -347,7 +348,7 @@ class AgentBreakerChainResult(Detector):
             ) from error
 
     def _load_verify_prompts(self) -> None:
-        """Load and validate the V6 system and user prompts."""
+        """Load and validate the chain system and user prompts."""
         prompt_location = "data/agent_breaker/source_to_sink_prompts.yaml"
         try:
             prompts_path = data_path / "agent_breaker" / "source_to_sink_prompts.yaml"
@@ -373,9 +374,14 @@ class AgentBreakerChainResult(Detector):
                 for _, field_name, _, _ in Formatter().parse(verify_user)
                 if field_name is not None
             }
-            if system_fields or user_fields != {"prompt", "response"}:
+            if system_fields or user_fields != {
+                "prompt",
+                "sink_requirement",
+                "response",
+            }:
                 raise ValueError(
-                    "verification prompts must accept only prompt and response"
+                    "verification prompts must accept prompt, sink_requirement, "
+                    "and response"
                 )
         except (
             GarakException,
@@ -386,7 +392,7 @@ class AgentBreakerChainResult(Detector):
             yaml.YAMLError,
         ) as error:
             message = (
-                f"{self.__class__.__name__} failed to load V6 verification prompts "
+                f"{self.__class__.__name__} failed to load chain verification prompts "
                 f"from {prompt_location}"
             )
             logging.error("%s: %s", message, error)
@@ -395,9 +401,9 @@ class AgentBreakerChainResult(Detector):
         self._verify_system = verify_system
         self._verify_user = verify_user
 
-    @staticmethod
-    def _eligible_prompt(attempt: Attempt) -> str | None:
-        """Return the exact sent prompt for an eligible terminal chain attempt."""
+    @classmethod
+    def _eligible_context(cls, attempt: Attempt) -> tuple[str, str] | None:
+        """Return the sent prompt and exact goal for an eligible terminal step."""
         notes = attempt.notes
         if not isinstance(notes, dict):
             return None
@@ -405,6 +411,7 @@ class AgentBreakerChainResult(Detector):
         chain_id = notes.get("chain_id")
         chain_step = notes.get("chain_step")
         chain_total_steps = notes.get("chain_total_steps")
+        sink_requirement = notes.get("chain_sink_requirement")
         eligible = (
             attempt.probe_classname == "agent_breaker.SourceToSink"
             and isinstance(chain_id, str)
@@ -414,6 +421,9 @@ class AgentBreakerChainResult(Detector):
             and type(chain_total_steps) is int
             and chain_total_steps > 0
             and chain_step == chain_total_steps
+            and isinstance(sink_requirement, str)
+            and bool(sink_requirement.strip())
+            and len(sink_requirement) <= cls._SINK_REQUIREMENT_CHAR_LIMIT
         )
         if not eligible or not isinstance(attempt.prompt, Conversation):
             return None
@@ -422,7 +432,9 @@ class AgentBreakerChainResult(Detector):
             prompt = attempt.prompt.last_message("user").text
         except ValueError:
             return None
-        return prompt if isinstance(prompt, str) else None
+        if not isinstance(prompt, str):
+            return None
+        return prompt, sink_requirement
 
     @staticmethod
     def _object_without_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
@@ -436,7 +448,7 @@ class AgentBreakerChainResult(Detector):
 
     @classmethod
     def _score_judgement(cls, judgement: str) -> float | None:
-        """Validate and score one V6 judgement."""
+        """Validate and score one chain judgement."""
         if not isinstance(judgement, str):
             return None
         try:
@@ -466,10 +478,14 @@ class AgentBreakerChainResult(Detector):
 
         return 1.0 if parsed["verdict"] == "YES" else 0.0
 
-    def _judge(self, attack_prompt: str, response_text: str) -> float | None:
+    def _judge(
+        self, attack_prompt: str, sink_requirement: str, response_text: str
+    ) -> float | None:
         """Ask the configured judge to score one exact prompt-response pair."""
         user_prompt = self._verify_user.format(
-            prompt=attack_prompt, response=response_text
+            prompt=attack_prompt,
+            sink_requirement=sink_requirement,
+            response=response_text,
         )
         conversation = Conversation(
             [
@@ -501,14 +517,15 @@ class AgentBreakerChainResult(Detector):
     def detect(self, attempt: Attempt) -> List[float | None]:
         """Score only outputs from eligible terminal chain attempts."""
         outputs = attempt.outputs
-        attack_prompt = self._eligible_prompt(attempt)
-        if attack_prompt is None:
+        context = self._eligible_context(attempt)
+        if context is None:
             return [None] * len(outputs)
+        attack_prompt, sink_requirement = context
 
         scores = []
         for output in outputs:
             if output is None or not isinstance(output.text, str):
                 scores.append(None)
                 continue
-            scores.append(self._judge(attack_prompt, output.text))
+            scores.append(self._judge(attack_prompt, sink_requirement, output.text))
         return scores

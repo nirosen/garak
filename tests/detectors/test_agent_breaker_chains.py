@@ -22,7 +22,10 @@ def detector():
         instance = AgentBreakerChainResult(config_root={})
     instance.evaluation_generator = MagicMock()
     instance._verify_system = "V6 SYSTEM"
-    instance._verify_user = "ATTACK PROMPT:\n{prompt}\n\nRESPONSE TEXT:\n{response}"
+    instance._verify_user = (
+        "ATTACK PROMPT:\n{prompt}\n\nSINK REQUIREMENT:\n{sink_requirement}"
+        "\n\nRESPONSE TEXT:\n{response}"
+    )
     return instance
 
 
@@ -40,6 +43,7 @@ def _attempt(
             "chain_role": "exploit",
             "chain_step": 3,
             "chain_total_steps": 3,
+            "chain_sink_requirement": "complete the required second mutation",
         }
     )
     if notes:
@@ -159,16 +163,16 @@ def test_initialisation_eagerly_loads_configured_generator():
     )
 
 
-def test_packaged_v6_prompts_match_frozen_components():
+def test_packaged_chain_prompts_match_reviewed_components():
     with patch.object(AgentBreakerChainResult, "_load_generator"):
         instance = AgentBreakerChainResult(config_root={})
 
     assert hashlib.sha256(instance._verify_system.encode("utf-8")).hexdigest() == (
-        "5f5f76a4325c573a8855d2270042aa0497a6dfa37f86623058832cf3a603f9ed"
-    ), "packaged system prompt must match V6"
+        "fa46e5add794eed3818a1ceff03409540f41355bf19d82c54fdf16a9cc899cb6"
+    ), "packaged system prompt must match the reviewed chain contract"
     assert hashlib.sha256(instance._verify_user.encode("utf-8")).hexdigest() == (
-        "35b0b2044e647c8cc34712016f8cc2a3e987101324e1a45ccd1621d10293e13e"
-    ), "packaged user prompt must match V6"
+        "7cf445076ab52443014cec2175c28bd2141b77b8c49681ac84ed88d27b843fd8"
+    ), "packaged user prompt must match the reviewed chain contract"
 
 
 def test_sends_only_exact_untruncated_prompt_and_response(detector):
@@ -200,7 +204,9 @@ def test_sends_only_exact_untruncated_prompt_and_response(detector):
         conversation.turns[0].content.text == "V6 SYSTEM"
     ), "judge system turn must preserve the V6 prompt"
     assert conversation.turns[1].content.text == detector._verify_user.format(
-        prompt=attack_prompt, response=response_text
+        prompt=attack_prompt,
+        sink_requirement="complete the required second mutation",
+        response=response_text,
     ), "judge user turn must preserve exact probe text"
     judge_text = conversation.turns[1].content.text
     assert "divergent note" not in judge_text, "judge input must ignore prompt notes"
@@ -312,6 +318,12 @@ def test_ignores_backend_metadata_and_cached_in_loop_verdicts(detector):
         ("agent_breaker.SourceToSink", {"chain_step": 2}),
         ("agent_breaker.SourceToSink", {"chain_step": True}),
         ("agent_breaker.SourceToSink", {"chain_total_steps": 0}),
+        ("agent_breaker.SourceToSink", {"chain_sink_requirement": ""}),
+        ("agent_breaker.SourceToSink", {"chain_sink_requirement": None}),
+        (
+            "agent_breaker.SourceToSink",
+            {"chain_sink_requirement": "x" * 1001},
+        ),
     ],
 )
 def test_nonchain_or_nonterminal_attempt_is_unscored(detector, probe_classname, notes):

@@ -979,6 +979,8 @@ class SourceToSink(_SourceToSinkMixin, AgentBreaker):
         if not attack_prompt:
             return None
         output_keys = entry.get("artifact_keys") or []
+        if final_step and output_keys:
+            return None
         if output_keys:
             required_lines = "\n".join(f"{key} = <value>" for key in output_keys)
             attack_prompt = (
@@ -1087,6 +1089,7 @@ class SourceToSink(_SourceToSinkMixin, AgentBreaker):
             "chain_step",
             "chain_total_steps",
             "chain_role",
+            "chain_sink_requirement",
             "chain_transcript",
         ):
             if key in (this_attempt.notes or {}):
